@@ -1,0 +1,8 @@
+fastapi==0.143.0
+uvicorn==0.54.0
+websockets==15.0.1
+PyYAML==6.0.3
+winsdk==1.0.0b10
+Pillow==12.3.0
+numpy==2.5.3
+rapidocr-onnxruntime==1.4.4

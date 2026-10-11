@@ -1,0 +1,39 @@
+# 标题满足任意一条即算这一路。启动器标题是 MyPCLauncher_x64r，点「开始游戏」后标题里会出现「梦幻西游」。
+# 点击坐标是客户区里的比例，只在 click.enabled 为 true 时使用。启动器按钮由文字识别定位。
+host: 127.0.0.1
+port: 8000
+slots:
+  - id: slot-1
+    account_id: account-1
+    title_contains:
+      - "MyPCLauncher_x64r"
+      - "梦幻西游"
+    launcher_title: "MyPCLauncher_x64r"
+    launcher_button: "开始游戏"
+    # 登录页列表里要选中的账号文字。空着则登录页只截图，不点账号。
+    login_account: ""
+    # 账号下拉在客户区里的比例。框里的文字会变，所以这里用坐标，不用文字。
+    login_dropdown:
+      x: 0.502
+      y: 0.477
+    # 活动海报右上角关闭按钮，在客户区里的比例。只有认出活动推送时才点。
+    popup_close:
+      x: 0.845
+      y: 0.253
+    # 福利页右上角关闭按钮，在客户区里的比例。只有认出福利页时才点。
+    welfare_close:
+      x: 0.948
+      y: 0.170
+    # 主界面上方「活动」图标，在客户区里的比例。文字在图标下面，所以不用文字识别。
+    activity_button:
+      x: 0.311
+      y: 0.089
+    # 主界面右上角头像，在客户区里的比例。点开头像后读角色 ID 和门派。
+    avatar_button:
+      x: 0.955
+      y: 0.103
+    sandbox_name: ""
+    click:
+      enabled: false
+      x: 0.5
+      y: 0.5
