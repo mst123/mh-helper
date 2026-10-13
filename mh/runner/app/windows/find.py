@@ -36,7 +36,7 @@ def window_title(hwnd: int) -> str:
 
 
 def find_window(title_contains: str | list[str]) -> FoundWindow:
-    """按标题找一个可见顶层窗口。标题满足任意一条即可。直接枚举，避免把每个窗口都包成对象后卡住这一路。"""
+    """按标题找一个可见顶层窗口。标题满足任意一条即可。多个时用枚举到的第一个。直接枚举，避免把每个窗口都包成对象后卡住这一路。"""
     if isinstance(title_contains, str):
         needles = [title_contains.strip()]
     else:
@@ -62,7 +62,4 @@ def find_window(title_contains: str | list[str]) -> FoundWindow:
     if not matches:
         joined = "」或「".join(needles)
         raise WindowMatchError("未找到窗口", f"没有标题包含「{joined}」的可见窗口")
-    if len(matches) > 1:
-        titles = "；".join(item.title for item in matches)
-        raise WindowMatchError("匹配到多个窗口", f"匹配到多个窗口：{titles}")
     return matches[0]

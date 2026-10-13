@@ -5,6 +5,7 @@ import re
 from PIL import Image, ImageChops, ImageStat
 
 from app.toolkit.button import ACTIVITY_ICON
+from app.toolkit.match import find_pictures, load_picture
 from app.windows.ocr import TextHit, read_texts_in
 
 _PROMO_NEEDLES = ("前往报名", "联赛手册")
@@ -76,22 +77,41 @@ def character_dialog(hits: list[TextHit]) -> bool:
     return any(compact(hit.text) in ("人物属性", "人物信息") for hit in hits)
 
 
-def is_state_a(hits: list[TextHit], width: int, height: int, image=None) -> bool:
-    """状态 A：上方能看到「活动」，人物信息这类弹窗不算。这时才能点活动。
+# 主界面右下角的包裹图标。对上才算在主界面。
+MAIN_BAG = (0.899, 0.805, 0.999, 0.941)
+_BAG = None
 
-    传入截图时，活动图标那一小块颜色也对就算，避免整屏认字漏掉这两个字。
-    """
+
+def _bag():
+    global _BAG
+    if _BAG is None:
+        _BAG = load_picture("包裹-主页面.png")
+    return _BAG
+
+
+def on_state_a(image: Image.Image) -> bool:
+    """主界面看右下角包裹图标。对上才算在主界面。"""
+    width, height = image.size
+    left = int(MAIN_BAG[0] * width)
+    top = int(MAIN_BAG[1] * height)
+    right = max(left + 1, int(MAIN_BAG[2] * width))
+    bottom = max(top + 1, int(MAIN_BAG[3] * height))
+    return bool(find_pictures(image.crop((left, top, right, bottom)), _bag(), threshold=0.85, limit=1))
+
+
+def is_state_a(hits: list[TextHit], width: int, height: int, image=None) -> bool:
+    """状态 A。有截图时只看右下角包裹图标。没有截图时才看上方的「活动」。"""
+    if image is not None:
+        return on_state_a(image)
     if character_dialog(hits):
         return False
-    if top_activity(hits, width, height):
-        return True
-    if image is None:
-        return False
-    return ACTIVITY_ICON.appear(image)
+    return top_activity(hits, width, height)
 
 
 def in_battle(hits: list[TextHit], width: int, height: int, image=None) -> bool:
     """战斗页：上方没有「活动」，右下角是「取消」或「自动」。不认头像。"""
+    if image is not None and on_state_a(image):
+        return False
     if top_activity(hits, width, height):
         return False
     if image is not None and ACTIVITY_ICON.appear(image):

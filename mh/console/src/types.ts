@@ -5,6 +5,9 @@ export interface SlotState {
   sandbox_name: string;
   status: string;
   detail: string;
+  task_id: string;
+  character_id: string;
+  character_name: string;
   screenshot_url: string | null;
   updated_at: number;
 }

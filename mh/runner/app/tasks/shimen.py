@@ -4,14 +4,16 @@ import time
 
 from app.daily import mark_done
 from app.windows.capture import CaptureError
-from app.windows.input import click_client_point
-from app.windows.ocr import TextHit, read_texts, read_texts_in
+from app.windows.input import click_client_point, click_client_ratio, press_escape
+from app.windows.ocr import TextHit, read_texts_in
 from app.tasks.character import read_character
-from app.toolkit.button import row_mark
-from app.toolkit.click import open_activity_list, wait_until_still
-from app.toolkit.dialog import escape_to_state_a, watch_center
-from app.toolkit.scroll import ListScroll
-from app.toolkit.screen import auto_pathing, compact, hit_contains, is_state_a, label_right, row_button, welfare_open
+from app.toolkit.button import color_near, row_mark
+from app.toolkit.dialog import escape_to_state_a
+from app.toolkit.match import region_same, shimen_card
+from app.toolkit.activity import SEARCH as _SEARCH
+from app.toolkit.activity import open_daily_list
+from app.toolkit.scroll import browse_list
+from app.toolkit.screen import compact, hit_contains, label_right, on_state_a, row_button
 
 TASK = "师门"
 
@@ -43,6 +45,11 @@ def _panel_action(hits: list[TextHit]) -> TextHit | None:
 
 def _row(hits: list[TextHit], width: int, image=None) -> tuple[str, TextHit] | None:
     """活动列表里「师门任务」右侧是「参加」还是「完成」。不看右侧任务追踪。"""
+    if image is not None:
+        card = shimen_card(image)
+        if card is not None:
+            label, x, y, score = card
+            return label, TextHit(label, score, x, y)
     daily = hit_contains(hits, "日常活动")
     best: tuple[str, TextHit, float] | None = None
     for hit in hits:
@@ -85,129 +92,216 @@ def _finish(slot, hwnd: int, image) -> bool:
     return True
 
 
-def run(slot, hwnd: int) -> None:
-    """先记下角色，再看活动列表里师门是「参加」还是「完成」。"""
-    if not read_character(slot, hwnd, done=done_open, on_done=lambda: _mark(slot)):
-        return
-    deadline = time.time() + 50
-    opened_daily = False
-    listing = ListScroll("师门任务")
-    list_clicks = 0
+_DIALOG = ((0.210, 0.273, 0.252, 0.315), (236, 168, 115))
+_ACTION = (0.296, 0.587, 0.903, 0.654)
+_WELFARE_COLOR = ((0.132, 0.521, 0.264, 0.581), (220, 115, 53))
+_WELFARE_TEXT = (0.455, 0.198, 0.554, 0.242)
+_WELFARE_CLOSE = (0.9485, 0.225)
+_STILL = (0.397, 0.576, 0.583, 0.766)
+_DONE_COLOR = ((0.364, 0.351, 0.627, 0.424), (221, 164, 84))
+
+
+def _shot(slot, hwnd: int):
     try:
         image = slot._capture_or_fail(hwnd)
     except CaptureError as exc:
         slot._set("截图失败", str(exc))
-        return
+        return None
     slot._save(image, "latest.png")
+    return image
+
+
+def _click_ratio(slot, hwnd: int, point: tuple[float, float], label: str) -> bool:
+    try:
+        click_client_ratio(hwnd, point[0], point[1])
+    except OSError as exc:
+        slot._set("未知界面", str(exc))
+        return False
+    slot._set("执行中", f"已点击「{label}」")
+    return True
+
+
+def _wait(slot, seconds: float) -> bool:
+    deadline = time.time() + seconds
     while time.time() < deadline:
         if slot.stopped():
-            return
-        hits = read_texts(image)
-        if done_open(hits, image.height, image):
-            _finish(slot, hwnd, image)
-            return
-        if auto_pathing(hits, image.width, image.height):
-            watch_center(slot, hwnd, "自动寻路", done_open, lambda: _mark(slot), task=TASK)
-            return
-        if welfare_open(hits, image.width, image.height):
-            image, seen_done = escape_to_state_a(slot, hwnd, image, done=done_open, task=TASK)
-            if image is None:
-                return
-            if seen_done:
-                _mark(slot)
-                slot._running = True
-                slot._set("执行中", "已按 Esc 回到主界面，师门完成")
-                return
-            continue
-        action = _panel_action(hits)
-        if action is not None:
-            label = "继续任务" if "继续任务" in compact(action.text) else "去完成"
-            x, y = slot._client_point(hwnd, image, action.x, action.y)
-            try:
-                click_client_point(hwnd, x, y)
-            except OSError as exc:
-                slot._set("未知界面", str(exc))
-                return
-            slot._set("执行中", f"已点击「{label}」，师门开始自动进行")
-            watch_center(slot, hwnd, label, done_open, lambda: _mark(slot), task=TASK)
-            return
-        row = _row(hits, image.width, image)
-        daily = hit_contains(hits, "日常活动")
-        if row is not None and opened_daily:
-            kind, listed = row
-            if kind == "完成":
-                _mark(slot)
-                image, _seen = escape_to_state_a(slot, hwnd, image, done=done_open, task=TASK)
-                if image is None:
-                    return
-                slot._running = True
-                slot._set("执行中", "活动列表里「师门任务」右侧是「完成」，今日不再做")
-                return
-            list_clicks += 1
-            if list_clicks > 3:
-                slot._set("未知界面", "点了「参加」，师门面板没有打开")
-                return
-            x, y = slot._client_point(hwnd, image, listed.x, listed.y)
-            try:
-                click_client_point(hwnd, x, y)
-            except OSError as exc:
-                slot._set("未知界面", str(exc))
-                return
-            slot._set("执行中", "已点击「师门任务」右侧的「参加」")
-            image = wait_until_still(slot, hwnd, image)
-            if image is None:
-                return
-            continue
-        elif daily is not None and not opened_daily:
-            x, y = slot._client_point(hwnd, image, daily.x, daily.y)
-            try:
-                click_client_point(hwnd, x, y)
-            except OSError as exc:
-                slot._set("未知界面", str(exc))
-                return
-            opened_daily = True
-            slot._set("执行中", "已点击「日常活动」")
-            image = wait_until_still(slot, hwnd, image)
-            if image is None:
-                return
-            continue
-        elif daily is not None:
-            image, exhausted = listing.step(slot, hwnd, image)
-            if image is None:
-                return
-            if exhausted:
-                slot._set("未知界面", "活动列表里没有找到「师门任务」")
-                return
-            continue
-        else:
-            if not is_state_a(hits, image.width, image.height, image):
-                image, seen_done = escape_to_state_a(slot, hwnd, image, done=done_open, task=TASK)
-                if image is None:
-                    return
-                if seen_done:
-                    _mark(slot)
-                    slot._running = True
-                    slot._set("执行中", "已按 Esc 回到主界面，师门完成")
-                    return
-                continue
-            image = open_activity_list(slot, hwnd, image)
-            if image is None:
-                return
-            continue
+            return False
+        time.sleep(min(0.4, deadline - time.time()))
+    return not slot.stopped()
+
+
+def _is_main(image) -> bool:
+    return on_state_a(image)
+
+
+def _welfare(image) -> bool:
+    box, expected = _WELFARE_COLOR
+    if color_near(image, box, expected):
+        return True
+    texts = [compact(hit.text) for hit in read_texts_in(image, *_WELFARE_TEXT)]
+    if any("福利" in text for text in texts):
+        return True
+    return "福" in texts and "利" in texts
+
+
+def _find_card(slot, hwnd: int, _image):
+    """先拖回列表头部，再逐页用图标找师门。"""
+    return browse_list(slot, hwnd, _SEARCH, shimen_card)
+
+
+def _back_main(slot, hwnd: int, image):
+    for _ in range(4):
+        if slot.stopped():
+            return None
+        if _is_main(image):
+            return image
         try:
-            image = slot._capture_or_fail(hwnd)
-        except CaptureError as exc:
-            slot._set("截图失败", str(exc))
-            return
-        slot._save(image, "latest.png")
-    hits = read_texts(image)
-    row = _row(hits, image.width, image)
-    if row is not None and row[0] == "完成":
-        _mark(slot)
-        image, _seen = escape_to_state_a(slot, hwnd, image, done=done_open, task=TASK)
+            press_escape(hwnd)
+        except OSError as exc:
+            slot._set("未知界面", str(exc))
+            return None
+        time.sleep(0.5)
+        image = _shot(slot, hwnd)
         if image is None:
+            return None
+    if _is_main(image):
+        return image
+    slot._set("未知界面", "没有回到主界面")
+    return None
+
+
+def _action_hit(image) -> TextHit | None:
+    found: TextHit | None = None
+    for hit in read_texts_in(image, *_ACTION):
+        text = compact(hit.text)
+        if text not in ("去完成", "继续任务") and "去完成" not in text and "继续任务" not in text:
+            continue
+        if found is None or hit.score > found.score:
+            found = hit
+    return found
+
+
+def run(slot, hwnd: int) -> None:
+    """按测好的七步做师门。点下去完成或继续任务，并处理福利弹窗后停住。"""
+    if not slot._character_id and not read_character(slot, hwnd, done=done_open, on_done=lambda: _mark(slot)):
+        return
+    image = open_daily_list(slot, hwnd)
+    if image is None:
+        return
+    image, card = _find_card(slot, hwnd, image)
+    if image is None:
+        return
+    if card is None:
+        slot._set("未知界面", "活动列表里没有找到师门任务")
+        return
+    label, x, y, _score = card
+    if label == "完成":
+        _mark(slot)
+        if _back_main(slot, hwnd, image) is None:
             return
         slot._running = True
-        slot._set("执行中", "活动列表里「师门任务」右侧是「完成」，今日不再做")
+        slot._set("执行中", "师门已完成，已回到主界面")
         return
-    slot._set("未知界面", "没有把师门任务点开")
+    try:
+        click_x, click_y = slot._client_point(hwnd, image, x, y)
+        click_client_point(hwnd, click_x, click_y)
+    except OSError as exc:
+        slot._set("未知界面", str(exc))
+        return
+    slot._set("执行中", "已点击「参加」")
+    dialog = False
+    box, expected = _DIALOG
+    for _ in range(8):
+        time.sleep(0.4)
+        image = _shot(slot, hwnd)
+        if image is None:
+            return
+        if color_near(image, box, expected):
+            dialog = True
+            break
+    if not dialog:
+        slot._set("未知界面", "师门弹窗没有打开")
+        return
+    action = _action_hit(image)
+    if action is None:
+        slot._set("未知界面", "师门弹窗里没有「去完成」或「继续任务」")
+        return
+    action_label = "继续任务" if "继续任务" in compact(action.text) else "去完成"
+    try:
+        click_x, click_y = slot._client_point(hwnd, image, action.x, action.y)
+        click_client_point(hwnd, click_x, click_y)
+    except OSError as exc:
+        slot._set("未知界面", str(exc))
+        return
+    slot._set("执行中", f"已点击「{action_label}」")
+    time.sleep(1.2)
+    image = _shot(slot, hwnd)
+    if image is None:
+        return
+    if _welfare(image):
+        try:
+            press_escape(hwnd)
+        except OSError as exc:
+            slot._set("未知界面", str(exc))
+            return
+        time.sleep(0.5)
+        image = _shot(slot, hwnd)
+        if image is None:
+            return
+        if _welfare(image):
+            if not _click_ratio(slot, hwnd, _WELFARE_CLOSE, "关闭福利"):
+                return
+            time.sleep(0.5)
+            image = _shot(slot, hwnd)
+            if image is None:
+                return
+            if _welfare(image):
+                slot._set("未知界面", "福利窗口没有关掉")
+                return
+    _watch_shimen(slot, hwnd, image)
+
+
+def _watch_shimen(slot, hwnd: int, previous) -> None:
+    """每 20 秒看中下这块。没变时，完成色对上就回主界面，否则按一次 Esc 继续。"""
+    while True:
+        slot._set("执行中", "师门进行中")
+        if not _wait(slot, 20):
+            return
+        image = _shot(slot, hwnd)
+        if image is None:
+            return
+        if not region_same(previous, image, _STILL):
+            previous = image
+            continue
+        box, expected = _DONE_COLOR
+        if color_near(image, box, expected):
+            _mark(slot)
+            for _ in range(2):
+                if slot.stopped():
+                    return
+                try:
+                    press_escape(hwnd)
+                except OSError as exc:
+                    slot._set("未知界面", str(exc))
+                    return
+                time.sleep(0.5)
+            image = _shot(slot, hwnd)
+            if image is None:
+                return
+            if _is_main(image):
+                slot._running = True
+                slot._set("执行中", "师门已完成，已回到主界面")
+                return
+            slot._set("未知界面", "师门已完成，按了两次 Esc 还没回到主界面")
+            return
+        try:
+            press_escape(hwnd)
+        except OSError as exc:
+            slot._set("未知界面", str(exc))
+            return
+        slot._set("执行中", "画面没变，已按一次 Esc")
+        time.sleep(0.5)
+        image = _shot(slot, hwnd)
+        if image is None:
+            return
+        previous = image

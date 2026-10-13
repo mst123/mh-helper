@@ -4,30 +4,15 @@ import re
 import time
 
 from app.daily import save_profile
-from app.windows.input import click_client_point, click_client_ratio
-from app.windows.ocr import TextHit, read_texts
+from app.windows.input import click_client_ratio, press_escape
+from app.windows.ocr import TextHit, read_texts_in
 from app.toolkit.dialog import escape_to_state_a
-from app.toolkit.screen import compact, is_state_a
+from app.toolkit.screen import compact, on_state_a
 
-
-def _role_panel(hits: list[TextHit]) -> bool:
-    for hit in hits:
-        text = compact(hit.text)
-        if text in ("人物属性", "人物信息"):
-            return True
-        if text == "ID" or (text.startswith("ID") and any(char.isdigit() for char in text)):
-            return True
-    return False
-
-
-def _panel_tab(hits: list[TextHit], width: int, label: str) -> TextHit | None:
-    best: TextHit | None = None
-    for hit in hits:
-        if compact(hit.text) != label or hit.x < width * 0.82:
-            continue
-        if best is None or hit.score > best.score:
-            best = hit
-    return best
+_PROFILE = (0.197, 0.229, 0.339, 0.318)
+_SCHOOL = (0.558, 0.236, 0.723, 0.299)
+_ATTR_CLICK = (0.9415, 0.350)
+_INFO_CLICK = (0.942, 0.494)
 
 
 def _id_hit(hits: list[TextHit]) -> TextHit | None:
@@ -92,6 +77,35 @@ def _school_name(hits: list[TextHit]) -> str:
     return compact(nearest.text) if nearest is not None else ""
 
 
+def _read_profile(image) -> tuple[str, str]:
+    hits = read_texts_in(image, *_PROFILE)
+    id_hit = _id_hit(hits)
+    if id_hit is None:
+        return "", ""
+    return _id_digits(id_hit), _name_near(hits, id_hit)
+
+
+def _read_school(image) -> str:
+    hits = read_texts_in(image, *_SCHOOL)
+    named = _school_name(hits)
+    if named:
+        return named
+    texts = [compact(hit.text) for hit in hits]
+    texts = [text for text in texts if text and text != "门派" and "贡献" not in text and "回门派" not in text]
+    return texts[0] if texts else ""
+
+
+def _click_ratio(slot, hwnd: int, point: tuple[float, float], label: str):
+    try:
+        click_client_ratio(hwnd, point[0], point[1])
+    except OSError as exc:
+        slot._set("未知界面", str(exc))
+        return None
+    slot._set("执行中", f"已点击「{label}」")
+    time.sleep(0.6)
+    return slot._grab(hwnd)
+
+
 def read_character(slot, hwnd: int, done=None, on_done=None) -> bool:
     """读到角色就返回真。途中看到任务完成时调用 on_done，并返回假。"""
     slot._character_id = ""
@@ -99,15 +113,14 @@ def read_character(slot, hwnd: int, done=None, on_done=None) -> bool:
     image = slot._grab(hwnd)
     if image is None:
         return False
-    hits = read_texts(image)
     seen_done = False
-    if not is_state_a(hits, image.width, image.height, image):
+    if not on_state_a(image):
         image, seen_done = escape_to_state_a(slot, hwnd, image, done=done)
         if image is None:
             return False
-    opened = _role_panel(read_texts(image))
+    character_id, name = _read_profile(image)
     clicks = 0
-    while not opened and clicks < 3:
+    while not character_id and clicks < 3:
         if slot.stopped():
             return False
         clicks += 1
@@ -122,63 +135,38 @@ def read_character(slot, hwnd: int, done=None, on_done=None) -> bool:
         image = slot._grab(hwnd)
         if image is None:
             return False
-        opened = _role_panel(read_texts(image))
-    if not opened:
-        slot._set("未知界面", "点了右上角头像，人物属性没有打开")
-        return False
-    character_id = ""
-    name = ""
-    for _ in range(4):
-        hits = read_texts(image)
-        id_hit = _id_hit(hits)
-        if id_hit is not None:
-            character_id = _id_digits(id_hit)
-            name = _name_near(hits, id_hit)
-            if character_id:
-                break
-        tab = _panel_tab(hits, image.width, "属性")
-        if tab is None:
+        character_id, name = _read_profile(image)
+        if character_id:
             break
-        x, y = slot._client_point(hwnd, image, tab.x, tab.y)
-        try:
-            click_client_point(hwnd, x, y)
-        except OSError as exc:
-            slot._set("未知界面", str(exc))
-            return False
-        slot._set("执行中", "已点击「属性」")
-        time.sleep(0.6)
-        image = slot._grab(hwnd)
+        image = _click_ratio(slot, hwnd, _ATTR_CLICK, "属性")
         if image is None:
             return False
+        character_id, name = _read_profile(image)
     if not character_id:
         slot._set("未知界面", "人物属性里没有读到角色 ID")
         return False
-    school = ""
-    for _ in range(4):
-        hits = read_texts(image)
-        school = _school_name(hits)
-        if school:
-            break
-        tab = _panel_tab(hits, image.width, "信息")
-        if tab is None:
-            break
-        x, y = slot._client_point(hwnd, image, tab.x, tab.y)
-        try:
-            click_client_point(hwnd, x, y)
-        except OSError as exc:
-            slot._set("未知界面", str(exc))
-            return False
-        slot._set("执行中", "已点击「信息」")
-        time.sleep(0.6)
-        image = slot._grab(hwnd)
-        if image is None:
-            return False
+    image = _click_ratio(slot, hwnd, _INFO_CLICK, "信息")
+    if image is None:
+        return False
+    school = _read_school(image)
     save_profile(character_id, name, school)
     slot._character_id = character_id
     slot._character_name = name
-    image, panel_done = escape_to_state_a(slot, hwnd, image, done=done)
+    try:
+        press_escape(hwnd)
+    except OSError as exc:
+        slot._set("未知界面", str(exc))
+        return False
+    slot._set("执行中", "已按 Esc 关闭弹窗")
+    time.sleep(0.5)
+    image = slot._grab(hwnd)
     if image is None:
         return False
+    panel_done = False
+    if not on_state_a(image):
+        image, panel_done = escape_to_state_a(slot, hwnd, image, done=done)
+        if image is None:
+            return False
     if seen_done or panel_done:
         if on_done is not None:
             on_done()

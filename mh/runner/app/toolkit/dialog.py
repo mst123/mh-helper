@@ -7,7 +7,7 @@ from PIL import Image
 from app.windows.capture import CaptureError
 from app.windows.input import press_escape
 from app.windows.ocr import read_texts
-from app.toolkit.screen import auto_pathing, center_still, in_battle, is_state_a
+from app.toolkit.screen import auto_pathing, center_still, in_battle, is_state_a, on_state_a
 
 
 def escape_to_state_a(slot, hwnd: int, image: Image.Image, done=None, task: str = "师门", limit: int = 8, hold=None):
@@ -20,6 +20,8 @@ def escape_to_state_a(slot, hwnd: int, image: Image.Image, done=None, task: str 
     for _ in range(limit):
         if slot.stopped():
             return None, seen_done
+        if on_state_a(image):
+            return image, seen_done
         hits = read_texts(image)
         if done is not None and done(hits, image.height, image):
             seen_done = True
@@ -43,6 +45,8 @@ def escape_to_state_a(slot, hwnd: int, image: Image.Image, done=None, task: str 
             slot._set("截图失败", str(exc))
             return None, seen_done
         slot._save(image, "latest.png")
+    if on_state_a(image):
+        return image, seen_done
     hits = read_texts(image)
     if done is not None and done(hits, image.height, image):
         seen_done = True

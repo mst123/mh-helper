@@ -224,9 +224,7 @@ def confirm_server(slot, hwnd: int, image: Image.Image, appear_timeout: float) -
 
 
 def settle_main(slot, hwnd: int, image: Image.Image, appear_timeout: float) -> bool:
-    """左下角「点击输入」或上方「活动」有一个，即算进入游戏。活动推送先关掉。"""
-    from app.tasks.shimen import run as run_shimen
-
+    """左下角「点击输入」或上方「活动」有一个，即算进入游戏。活动推送先关掉。不在这里开任务。"""
     deadline = time.time() + appear_timeout
     closed = 0
     while True:
@@ -255,11 +253,6 @@ def settle_main(slot, hwnd: int, image: Image.Image, appear_timeout: float) -> b
                 slot._set("执行中", "已关闭活动推送，并进入主界面")
             else:
                 slot._set("执行中", "已进入主界面")
-            run_shimen(slot, hwnd)
-            if slot._status == "执行中":
-                from app.tasks.baotu import run as run_baotu
-
-                run_baotu(slot, hwnd)
             return True
         elif time.time() >= deadline:
             return False

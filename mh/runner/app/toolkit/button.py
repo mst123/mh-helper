@@ -40,6 +40,23 @@ class RatioButton:
         return sum(abs(got[index] - self.color[index]) for index in range(3)) <= self.threshold
 
 
+def color_near(
+    image: Image.Image,
+    box: tuple[float, float, float, float],
+    expected: tuple[int, int, int],
+    tolerance: int = 40,
+) -> bool:
+    """框内平均色每个通道与预期相差不超过 tolerance。"""
+    width, height = image.size
+    left = max(0, min(width - 1, int(box[0] * width)))
+    top = max(0, min(height - 1, int(box[1] * height)))
+    right = max(left + 1, min(width, int(box[2] * width)))
+    bottom = max(top + 1, min(height, int(box[3] * height)))
+    crop = image.crop((left, top, right, bottom)).convert("RGB")
+    got = tuple(int(channel) for channel in ImageStat.Stat(crop).mean)
+    return all(abs(got[index] - expected[index]) <= tolerance for index in range(3))
+
+
 # 主界面左上角活动图标。列表或人物信息盖住时，这块颜色会变。
 ACTIVITY_ICON = RatioButton("活动", 0.311, 0.089, 0.016, 0.017, (188, 130, 80), 42)
 

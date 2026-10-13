@@ -2,7 +2,7 @@
   <main class="page">
     <header class="heading">
       <h1>进度监控</h1>
-      <p>每张卡片对应一路 Windows 客户端。开始后会按窗口截图。启动器会点击「开始游戏」。登录页会按配置的账号点「进入游戏」，区服和角色保持默认后再点「登录游戏」。进入主界面后先点右上角头像，记下角色名字、ID 和门派。再打开活动列表看「师门任务」右侧：是「完成」就记到本地、今天不再做；是「参加」才点，然后点「去完成」或「继续任务」。重新上号也会再看一次。师门进行中每 15 秒看一次画面中心，连续两次几乎不变才关弹窗。出现「师门任务完成」后才按 Esc 回到主界面。接着做宝图：活动列表里点「宝图任务」右侧的「参加」或「继续任务」，对话出现后点「听听无妨」。战斗中不按 Esc。</p>
+      <p>每张卡片对应一路 Windows 客户端。请先自己登录，停在主界面。选择一个任务后点开始，默认是师门。这一轮只跑选中的任务，回到主界面后停止。还没有角色记录时会先点头像。执行中和暂停时不能换任务，也不能清除记录。</p>
     </header>
     <el-alert v-if="store.error" :title="store.error" type="error" show-icon :closable="false" />
     <el-empty v-if="store.slots.length === 0" description="还没有接到执行器上的路" />
@@ -16,7 +16,17 @@
             </div>
           </template>
           <p class="meta">运行方式：{{ slot.run_mode }}</p>
-          <p class="meta">编号：{{ slot.id }}</p>
+          <p class="meta">角色：{{ characterLine(slot) }}</p>
+          <div class="task-row">
+            <span>任务</span>
+            <el-select
+              :model-value="slot.task_id || 'shimen'"
+              :disabled="locked(slot.status)"
+              @change="(value: string) => store.selectTask(slot.id, value)"
+            >
+              <el-option v-for="task in store.tasks" :key="task.id" :label="task.name" :value="task.id" />
+            </el-select>
+          </div>
           <p v-if="slot.detail" class="detail">{{ slot.detail }}</p>
           <div class="shot">
             <img v-if="slot.screenshot_url" :src="slot.screenshot_url" alt="当前客户区截图" />
@@ -30,6 +40,8 @@
             <el-button :disabled="slot.status === '排队' || slot.status === '已停止'" @click="store.command(slot.id, 'stop')">
               停止
             </el-button>
+            <el-button :disabled="locked(slot.status)" @click="store.clearCharacter(slot.id)">清除当前角色</el-button>
+            <el-button :disabled="locked(slot.status)" @click="store.clearToday(slot.id)">清除今日完成</el-button>
           </div>
         </el-card>
       </el-col>
@@ -41,8 +53,19 @@
 import { onMounted } from "vue";
 
 import { useBatchStore } from "../stores/batch";
+import type { SlotState } from "../types";
 
 const store = useBatchStore();
+
+function locked(status: string) {
+  return status === "执行中" || status === "暂停";
+}
+
+function characterLine(slot: SlotState) {
+  if (!slot.character_id) return "还没有记录";
+  const name = slot.character_name || "未读到名字";
+  return `${name}（${slot.character_id}）`;
+}
 
 function tagType(status: string) {
   if (status === "执行中") return "success";
@@ -53,10 +76,11 @@ function tagType(status: string) {
 
 onMounted(async () => {
   try {
+    await store.fetchTasks();
     await store.fetchSlots();
     store.error = "";
   } catch {
-    store.error = "连不上执行器。先在 apps/runner 里启动它。";
+    store.error = "连不上执行器。先在 mh/runner 里启动它。";
   }
   store.connect();
 });
@@ -117,8 +141,24 @@ onMounted(async () => {
   object-fit: contain;
 }
 
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.task-row span {
+  color: #606266;
+}
+
+.task-row .el-select {
+  width: 160px;
+}
+
 .actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 </style>

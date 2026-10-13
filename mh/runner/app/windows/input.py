@@ -10,6 +10,8 @@ WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
 WM_MOUSEWHEEL = 0x020A
 INPUT_MOUSE = 0
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_WHEEL = 0x0800
 VK_ESCAPE = 0x1B
 SCAN_ESCAPE = 0x01
@@ -131,6 +133,59 @@ def scroll_real(hwnd: int, x: int, y: int, notches: int) -> None:
             user32.SetForegroundWindow(wintypes.HWND(previous))
     if sent < 1:
         raise OSError("滚轮没有送进窗口")
+
+
+def _mouse_button(flags: int) -> None:
+    event = INPUT(
+        type=INPUT_MOUSE,
+        mi=MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=flags, time=0, dwExtraInfo=0),
+    )
+    if int(user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(INPUT))) < 1:
+        raise OSError("鼠标按键没有送进去")
+
+
+def drag_real(hwnd: int, x: int, y: int, dx: int, dy: int, seconds: float) -> None:
+    """在客户区按下，缓慢拖一段像素，再松开。光标和原来的前台窗口随后放回。"""
+    width, height = client_size(hwnd)
+    x = max(0, min(width - 1, int(x)))
+    y = max(0, min(height - 1, int(y)))
+    end_x = max(0, min(width - 1, x + int(dx)))
+    end_y = max(0, min(height - 1, y + int(dy)))
+    previous = _focus_window(hwnd)
+    if not _foreground_is(hwnd):
+        raise OSError("没能把游戏窗口放到前面，拖动没有送进去")
+    saved = wintypes.POINT()
+    user32.GetCursorPos(ctypes.byref(saved))
+    held = False
+    try:
+        start = wintypes.POINT(x, y)
+        if not user32.ClientToScreen(wintypes.HWND(hwnd), ctypes.byref(start)):
+            raise OSError("无法把拖动位置换算到屏幕")
+        user32.SetCursorPos(int(start.x), int(start.y))
+        time.sleep(0.05)
+        _mouse_button(MOUSEEVENTF_LEFTDOWN)
+        held = True
+        steps = max(8, int(float(seconds) / 0.016))
+        pause = float(seconds) / steps
+        for index in range(1, steps + 1):
+            point = wintypes.POINT(
+                int(round(x + (end_x - x) * index / steps)),
+                int(round(y + (end_y - y) * index / steps)),
+            )
+            if not user32.ClientToScreen(wintypes.HWND(hwnd), ctypes.byref(point)):
+                raise OSError("无法把拖动位置换算到屏幕")
+            user32.SetCursorPos(int(point.x), int(point.y))
+            time.sleep(pause)
+    finally:
+        if held:
+            release = INPUT(
+                type=INPUT_MOUSE,
+                mi=MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=MOUSEEVENTF_LEFTUP, time=0, dwExtraInfo=0),
+            )
+            user32.SendInput(1, ctypes.byref(release), ctypes.sizeof(INPUT))
+        user32.SetCursorPos(int(saved.x), int(saved.y))
+        if previous and not _foreground_is(previous):
+            user32.SetForegroundWindow(wintypes.HWND(previous))
 
 
 kernel32 = ctypes.windll.kernel32

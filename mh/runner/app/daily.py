@@ -63,6 +63,22 @@ def mark_done(character_id: str, task: str, day: str | None = None) -> None:
         _save(data)
 
 
+def clear_today(character_id: str, day: str | None = None) -> None:
+    """清掉这个角色当天的完成标记。角色档案还在。"""
+    if not character_id:
+        return
+    day = day or date.today().isoformat()
+    with _LOCK:
+        data = _load()
+        row = data["characters"].get(character_id)
+        if not isinstance(row, dict):
+            return
+        tasks = row.get("tasks")
+        if isinstance(tasks, dict):
+            tasks.pop(day, None)
+        _save(data)
+
+
 def is_done(character_id: str, task: str, day: str | None = None) -> bool:
     if not character_id or not task:
         return False

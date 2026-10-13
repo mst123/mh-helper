@@ -8,12 +8,15 @@ from queue import Empty, Queue
 from PIL import Image
 
 from app.config import ROOT, SlotSpec
+from app.daily import clear_today
 from app.evidence import ClickGuard, append_status, dump_error
-from app.tasks.login import confirm_server, enter_from_login, press_launcher, settle_main
-from app.toolkit.screen import changed, is_black
+from app.tasks.catalog import run_task, task_name
+from app.tasks.character import read_character
+from app.tasks.prepare import ensure_state_a
+from app.toolkit.screen import is_black
 from app.windows.capture import CaptureError, capture_client_image
 from app.windows.find import WindowMatchError, find_window
-from app.windows.input import click_client_ratio, client_size
+from app.windows.input import client_size
 
 DATA_DIR = ROOT / "data" / "slots"
 
@@ -30,6 +33,7 @@ class SlotRuntime:
         self._running = False
         self._character_id = ""
         self._character_name = ""
+        self._task_id = "shimen"
         self._screenshot_mtime = 0.0
         self._recent: deque[Image.Image] = deque(maxlen=6)
         self._clicks = ClickGuard()
@@ -51,6 +55,29 @@ class SlotRuntime:
     def snapshot_path(self) -> Path:
         return DATA_DIR / self.spec.id / "latest.png"
 
+    def debug_path(self) -> Path:
+        return DATA_DIR / self.spec.id / "debug.png"
+
+    def capture_for_inspect(self) -> str | None:
+        """为识别调试截一张。任务还在跑时不截，避免和任务抢同一窗口。"""
+        if self.busy():
+            return "任务还在跑，先停止再截图"
+        try:
+            found = find_window(self.spec.title_needles())
+        except WindowMatchError as exc:
+            return exc.detail
+        try:
+            image = self._capture_or_fail(found.hwnd)
+        except CaptureError as exc:
+            return str(exc)
+        self._hwnd = found.hwnd
+        self._save(image, "debug.png")
+        return None
+
+    def replace_debug_image(self, image: Image.Image) -> None:
+        """用一张本地图替换识别调试的底图。不截窗口，也不改任务截图。"""
+        self._save(image.convert("RGB"), "debug.png")
+
     def public(self) -> dict:
         with self._lock:
             screenshot_url = None
@@ -65,6 +92,9 @@ class SlotRuntime:
                 "sandbox_name": self.spec.sandbox_name,
                 "status": self._status,
                 "detail": self._detail,
+                "task_id": self._task_id,
+                "character_id": self._character_id,
+                "character_name": self._character_name,
                 "screenshot_url": screenshot_url,
                 "updated_at": self._screenshot_mtime or time.time(),
             }
@@ -130,7 +160,7 @@ class SlotRuntime:
             return True
         if self._take("pause"):
             self._running = True
-            self._set("暂停", "师门操作已暂停")
+            self._set("暂停", "任务已暂停")
             return True
         return self._abort
 
@@ -165,33 +195,75 @@ class SlotRuntime:
             self._set("暂停", f"已连接「{found.title}」，点击已暂停")
             return
         launcher_title = self.spec.launcher_title.strip()
-        launcher_button = self.spec.launcher_button.strip()
-        if launcher_title and launcher_button and launcher_title in found.title:
-            press_launcher(self, found.hwnd, before, launcher_button)
+        if launcher_title and launcher_title in found.title:
+            self._running = False
+            self._set("已停止", "请先进入主界面")
             return
-        if self.spec.login_account.strip() and enter_from_login(self, found.hwnd, before):
+        ready = ensure_state_a(self, found.hwnd, before)
+        if ready is None:
+            self._running = False
             return
-        if confirm_server(self, found.hwnd, before, 0):
+        if not self._character_id:
+            if not read_character(self, found.hwnd):
+                self._running = False
+                return
+        name = task_name(self._task_id)
+        if not name:
+            self._running = False
+            self._set("已停止", "没有这个任务")
             return
-        if settle_main(self, found.hwnd, before, 0):
-            return
-        if not self.spec.click.enabled:
-            self._running = True
-            self._set("执行中", f"已连接「{found.title}」，点击未启用")
-            return
-
-        try:
-            x, y = click_client_ratio(found.hwnd, self.spec.click.x, self.spec.click.y)
-            after = self._capture_or_fail(found.hwnd)
-        except (OSError, CaptureError) as exc:
-            self._set("截图失败", str(exc))
-            return
-
-        self._save(after, "latest.png")
-        self._save(after, "after.png")
-        moved = "画面有变化" if changed(before, after) else "画面没有变化"
         self._running = True
-        self._set("执行中", f"已点击客户区 ({x}, {y})，{moved}")
+        self._set("执行中", f"开始「{name}」")
+        run_task(self, found.hwnd, self._task_id)
+        self._close_task()
+
+    def busy(self) -> bool:
+        with self._lock:
+            return self._status in ("执行中", "暂停")
+
+    def select_task(self, task_id: str) -> bool:
+        if self.busy() or not task_name(task_id):
+            return False
+        with self._lock:
+            self._task_id = task_id
+        self._on_change()
+        return True
+
+    def clear_character(self) -> str | None:
+        if self.busy():
+            return "任务还没停止"
+        self._character_id = ""
+        self._character_name = ""
+        self._set(self._idle_status(), "已清除当前角色，下次开始会重新读取")
+        return None
+
+    def clear_today_mark(self) -> str | None:
+        if self.busy():
+            return "任务还没停止"
+        if not self._character_id:
+            return "还没有角色记录"
+        clear_today(self._character_id)
+        shown = self._character_name or self._character_id
+        self._set(self._idle_status(), f"已清除「{shown}」今日的完成标记")
+        return None
+
+    def _idle_status(self) -> str:
+        with self._lock:
+            if self._status == "排队":
+                return "排队"
+        return "已停止"
+
+    def _close_task(self) -> None:
+        if self._status == "暂停":
+            return
+        if self._status in ("未知界面", "截图失败", "需要人工"):
+            self._running = False
+            return
+        if self._abort:
+            self._running = False
+            return
+        self._running = False
+        self._set("已停止", self._detail)
 
     def _client_point(self, hwnd: int, image: Image.Image, image_x: int, image_y: int) -> tuple[int, int]:
         width, height = client_size(hwnd)
